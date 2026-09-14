@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from models import RequestModel, ResponseModel
 import requests
 
+from config import config
 from llm import llm_server
 
 
@@ -17,9 +18,9 @@ async def root():
 @app.get("/health")
 async def health_check():
     headers = {
-        "Authorization": "Bearer fmcp_pZ4dNc02HQM0JVxaekOqEYhdtksik6Y9tl0aKJ3f9vo"
+        "Authorization": f"Bearer {config.MCP_SERVER_API_KEY}"
     }
-    response = requests.get("http://deep-mcp.fastmcp.app/status", headers=headers)
+    response = requests.get(f"{config.MCP_SERVER_URL}/status", headers=headers)
     print(response.content)
     return {
         "status": response.status_code,
