@@ -1,55 +1,42 @@
-from fastmcp import FastMCP
-from starlette.requests import Request
-from starlette.responses import JSONResponse
-from datetime import datetime
+import json
+import redis
+from typing import List, Dict
+
+from config import config
 
 
-# Initialize your Tool Server
-mcp = FastMCP("RealEstateCopilot")
+class RedisSessionManager:
+    def __init__(self,
+            host=config.REDIS_HOST,
+            port=config.REDIS_PORT,
+            decode_responses=True,
+            username=config.REDIS_USERNAME,
+            password=config.REDIS_PASSWORD,
+            default_ttl: int = 900
+        ):
+        """
+        Initializes Redis connection using a connection string.
+        """
+        # from_url automatically parses host, port, user, password, and DB
+        self.r = redis.Redis(host=host, port=port, decode_responses=decode_responses, username=username, password=password)
+        self.default_ttl = default_ttl
 
-# ==========================================
-# MCP TOOLS (Visible to the LLM)
-# ==========================================
-@mcp.tool()
-async def get_date() -> str:
-    """Fetches date."""
-    date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    return f"Current date and time: {date}"
+    def _format_key(self, phone: str) -> str:
+        clean_phone = "".join(filter(str.isdigit, phone))
+        return f"session:{clean_phone}"
 
-# ==========================================
-# CUSTOM HTTP ROUTES (Invisible to the LLM)
-# ==========================================
-@mcp.custom_route("/health", methods=["GET"])
-async def health_check(request: Request) -> JSONResponse:
-    """
-    Standard HTTP endpoint. The LLM cannot see or trigger this.
-    Use this for Docker health checks, AWS Target Groups, or UptimeRobot.
-    """
-    try:
-        # 1. Check your Vector DB (e.g., Pinecone/Milvus)
-        db_status = "ok" # Replace with actual await check_db()
-        
-        # 2. Check Meta Graph API connectivity
-        whatsapp_api_status = "ok" # Replace with actual await check_meta_api()
-        
-        # 3. Check any internal CRMs
-        crm_status = "ok"
-        
-        return JSONResponse({
-            "status": "healthy",
-            "services": {
-                "vector_db": db_status,
-                "whatsapp_api": whatsapp_api_status,
-                "crm": crm_status
-            }
-        }, status_code=200)
-        
-    except Exception as e:
-        return JSONResponse({
-            "status": "unhealthy",
-            "error": str(e)
-        }, status_code=503)
+    def append_client_message(self, phone: str, text: str) -> None:
+        key = self._format_key(phone)
+        payload = json.dumps({"role": "user", "content": text})
 
-if __name__ == "__main__":
-    # Runs the server on http://0.0.0.0:8000
-    mcp.run(transport="sse", host="0.0.0.0", port=8001)
+        pipe = self.r.pipeline()
+        pipe.rpush(key, payload)
+        pipe.expire(key, self.default_ttl)
+        pipe.execute()
+
+    def get_conversation_history(self, phone: str) -> List[Dict[str, str]]:
+        key = self._format_key(phone)
+        raw_messages = self.r.lrange(key, 0, -1)
+        return [json.loads(msg) for msg in raw_messages]
+
+redis_manager = RedisSessionManager()
