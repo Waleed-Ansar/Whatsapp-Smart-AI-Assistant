@@ -1,0 +1,11 @@
+pydantic
+langchain
+langchain-classic
+langchain-core
+langchain-community
+langchain-mcp-adapters
+langchain-openai
+fastapi
+uvicorn
+dotenv
+httpx
