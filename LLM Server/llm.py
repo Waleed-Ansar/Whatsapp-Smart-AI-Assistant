@@ -62,7 +62,7 @@ class LLMServer:
             self._mcp_client = MultiServerMCPClient({
                 "utility_tools": {
                     "url": self.MCP_SERVER_URL,
-                    "transport": "sse",
+                    "transport": "http",
                     "headers": {
                         "Authorization": f"Bearer {self.MCP_SERVER_API_KEY}"
                     },
@@ -86,6 +86,18 @@ class LLMServer:
                 checkpointer=self.memory,
             )
             return self._agent
+
+    async def get_mcp_tools(self) -> list:
+        """
+        Safely fetches MCP tools for external services like the Gatekeeper.
+        Initializes the client and agent if they haven't been built yet.
+        """
+        # Ensure the client and agent are built
+        if self._mcp_client is None:
+            await self._get_or_create_agent()
+            
+        # Safely return the tools
+        return await self._mcp_client.get_tools()
 
     def build_chat_per_user(self, chat_id: str) -> RunnableConfig:
         """Synchronous configuration builder."""

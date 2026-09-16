@@ -1,10 +1,8 @@
-import json
-import redis
 from fastapi import FastAPI, Request, Response, Query
 from typing import Optional
 
 
-from services import redis_manager
+from redis_manager import redis_manager
 
 app = FastAPI(title="WhatsApp Webhook Demo")
 

@@ -10,3 +10,4 @@ uvicorn
 dotenv
 httpx
 redis
+motor

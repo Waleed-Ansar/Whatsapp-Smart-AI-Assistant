@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatsApp Agent Onboarding</title>
+    <script async defer crossorigin="anonymous" src="https://connect.facebook.net/en_US/sdk.js"></script>
+</head>
+<body>
+    <div style="font-family: sans-serif; max-width: 400px; margin: 50px auto; text-align: center;">
+        <h2>Connect Agent WhatsApp</h2>
+        <input type="text" id="agentId" placeholder="Enter Agent ID (e.g. agent_123)" style="padding: 8px; width: 80%; margin-bottom: 12px;" /><br/>
+        <button onclick="launchEmbeddedSignup()" style="padding: 10px 20px; background: #25D366; color: white; border: none; border-radius: 5px; cursor: pointer;">
+            Connect WhatsApp Business App
+        </button>
+    </div>
+
+    <script>
+        let sessionData = {};
+
+        // 1. Initialize Meta Facebook SDK
+        window.fbAsyncInit = function() {
+            FB.init({
+                appId: '2409051026256039',
+                cookie: true,
+                xfbml: true,
+                version: 'v20.0'
+            });
+        };
+
+        // 2. Event listener for Meta's postMessage payload (safely handles Objects & Strings)
+        window.addEventListener('message', (event) => {
+            if (!['https://www.facebook.com', 'https://web.facebook.com'].includes(event.origin)) return;
+
+            try {
+                const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+                console.log('--- RAW META POSTMESSAGE RECEIVED ---', data);
+
+                if (data && data.type === 'WA_EMBEDDED_SIGNUP') {
+                    if (data.data) {
+                        sessionData = {
+                            waba_id: data.data.waba_id || sessionData.waba_id || null,
+                            phone_number_id: data.data.phone_number_id || sessionData.phone_number_id || null
+                        };
+                        console.log('--- UPDATED SESSION DATA ---', sessionData);
+                    }
+                }
+            } catch (e) {
+                console.error('Error parsing postMessage:', e);
+            }
+        });
+
+        // 3. Launch embedded signup popup and send payload to FastAPI
+        function launchEmbeddedSignup() {
+            const agentId = document.getElementById('agentId').value;
+            if (!agentId) {
+                alert('Please enter an Agent ID first.');
+                return;
+            }
+
+            FB.login((response) => {
+                console.log('--- FB LOGIN RESPONSE ---', response);
+                
+                if (response.authResponse?.code) {
+                    const payload = {
+                        agent_id: agentId,
+                        code: response.authResponse.code,
+                        waba_id: sessionData.waba_id,
+                        phone_number_id: sessionData.phone_number_id
+                    };
+
+                    fetch('/api/whatsapp/link', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                }
+            }, {
+                config_id: '1756006208975112',
+                response_type: 'code',
+                override_default_response_type: true,
+                extras: {
+                    feature: 'whatsapp_embedded_signup',
+                    featureType: 'whatsapp_business_app_onboarding'
+                }
+            });
+        }
+    </script>
+</body>
+</html>
