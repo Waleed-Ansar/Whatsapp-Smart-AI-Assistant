@@ -3,88 +3,79 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>WhatsApp Agent Onboarding</title>
-    <script async defer crossorigin="anonymous" src="https://connect.facebook.net/en_US/sdk.js"></script>
+    <title>Agent Onboarding | WhatsApp AI</title>
+    <style>
+        body { font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; background-color: #f4f4f9; }
+        .card { background: white; padding: 40px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); text-align: center; }
+        .btn-meta { background-color: #1877f2; color: white; border: none; padding: 12px 24px; font-size: 16px; border-radius: 6px; cursor: pointer; font-weight: bold; margin-top: 20px; }
+        .btn-meta:hover { background-color: #166fe5; }
+    </style>
 </head>
 <body>
-    <div style="font-family: sans-serif; max-width: 400px; margin: 50px auto; text-align: center;">
-        <h2>Connect Agent WhatsApp</h2>
-        <input type="text" id="agentId" placeholder="Enter Agent ID (e.g. agent_123)" style="padding: 8px; width: 80%; margin-bottom: 12px;" /><br/>
-        <button onclick="launchEmbeddedSignup()" style="padding: 10px 20px; background: #25D366; color: white; border: none; border-radius: 5px; cursor: pointer;">
-            Connect WhatsApp Business App
-        </button>
-    </div>
 
-    <script>
-        let sessionData = {};
+<div class="card">
+    <h2>Connect Your WhatsApp</h2>
+    <p>Link your number so our AI can start handling your leads.</p>
+    <!-- The button triggers the Meta Popup -->
+    <button class="btn-meta" onclick="launchWhatsAppSignup()">Log in with Facebook</button>
+    <p id="status-message" style="margin-top: 15px; color: green; font-weight: bold;"></p>
+</div>
 
-        // 1. Initialize Meta Facebook SDK
-        window.fbAsyncInit = function() {
-            FB.init({
-                appId: '2409051026256039',
-                cookie: true,
-                xfbml: true,
-                version: 'v20.0'
-            });
-        };
-
-        // 2. Event listener for Meta's postMessage payload (safely handles Objects & Strings)
-        window.addEventListener('message', (event) => {
-            if (!['https://www.facebook.com', 'https://web.facebook.com'].includes(event.origin)) return;
-
-            try {
-                const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
-                console.log('--- RAW META POSTMESSAGE RECEIVED ---', data);
-
-                if (data && data.type === 'WA_EMBEDDED_SIGNUP') {
-                    if (data.data) {
-                        sessionData = {
-                            waba_id: data.data.waba_id || sessionData.waba_id || null,
-                            phone_number_id: data.data.phone_number_id || sessionData.phone_number_id || null
-                        };
-                        console.log('--- UPDATED SESSION DATA ---', sessionData);
-                    }
-                }
-            } catch (e) {
-                console.error('Error parsing postMessage:', e);
-            }
+<!-- Load Meta's Official SDK -->
+<script async defer crossorigin="anonymous" src="https://connect.facebook.net/en_US/sdk.js"></script>
+<script>
+    // 1. Initialize the SDK with your Meta App ID
+    window.fbAsyncInit = function() {
+        FB.init({
+            appId      : '2409051026256039',
+            cookie     : true,
+            xfbml      : true,
+            version    : 'v20.0'
         });
+    };
 
-        // 3. Launch embedded signup popup and send payload to FastAPI
-        function launchEmbeddedSignup() {
-            const agentId = document.getElementById('agentId').value;
-            if (!agentId) {
-                alert('Please enter an Agent ID first.');
-                return;
-            }
-
-            FB.login((response) => {
-                console.log('--- FB LOGIN RESPONSE ---', response);
+    // 2. Launch the Popup
+    function launchWhatsAppSignup() {
+        FB.login(function(response) {
+            if (response.authResponse && response.status === 'connected') {
+                const code = response.authResponse.code;
                 
-                if (response.authResponse?.code) {
-                    const payload = {
-                        agent_id: agentId,
-                        code: response.authResponse.code,
-                        waba_id: sessionData.waba_id,
-                        phone_number_id: sessionData.phone_number_id
-                    };
+                document.getElementById('status-message').innerText = "Linking account... Please wait.";
 
-                    fetch('/api/whatsapp/link', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify(payload)
-                    });
-                }
-            }, {
-                config_id: '1756006208975112',
-                response_type: 'code',
-                override_default_response_type: true,
-                extras: {
-                    feature: 'whatsapp_embedded_signup',
-                    featureType: 'whatsapp_business_app_onboarding'
-                }
-            });
-        }
-    </script>
+                // 3. Send the secure code to your FastAPI backend
+                fetch('http://localhost:8000/api/connect-whatsapp', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ code: code })
+                })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.status === "success") {
+                        document.getElementById('status-message').innerText = "✅ Successfully Connected!";
+                    } else {
+                        document.getElementById('status-message').innerText = "❌ Connection failed.";
+                    }
+                });
+            }
+        }, {
+            config_id: '1756006208975112', // You generate this in the Meta App Dashboard
+            response_type: 'code',
+            override_default_response_type: true
+        });
+    }
+
+    // 4. Listen for the WABA and Phone Number IDs from the popup
+    window.addEventListener('message', (event) => {
+        if (!event.origin.endsWith('facebook.com')) return;
+        try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'WA_EMBEDDED_SIGNUP' && data.event === 'FINISH') {
+                // If you want to grab the phone_number_id immediately on the frontend
+                console.log("Attached Phone Number ID:", data.data.phone_number_id);
+            }
+        } catch (e) {}
+    });
+</script>
+
 </body>
 </html>

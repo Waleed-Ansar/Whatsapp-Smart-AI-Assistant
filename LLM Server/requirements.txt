@@ -11,3 +11,4 @@ dotenv
 httpx
 redis
 motor
+passlib

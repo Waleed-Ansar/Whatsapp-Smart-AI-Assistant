@@ -22,6 +22,7 @@ class Config:
     
     MONGODB_URI = os.getenv("MONGODB_URI", "")
     DB_NAME = os.getenv("DB_NAME", "")
-    COLLECTION_NAME = os.getenv("COLLECTION_NAME", "")
+    CHAT_COLLECTION_NAME = os.getenv("CHAT_COLLECTION_NAME", "")
+    CRED_COLLECTION_NAME = os.getenv("CRED_COLLECTION_NAME", "")
 
 config = Config()

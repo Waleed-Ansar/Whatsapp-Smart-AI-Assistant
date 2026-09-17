@@ -1,15 +1,16 @@
 from typing import Optional
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Query, Response, BackgroundTasks
-import requests
+from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+import requests, httpx
 
 from config import config
 from redis_manager import redis_manager
-from gatekeeper import gatekeeper_agent
+from services import process_gatekeeper_flow
 from database import db_manager
 
 
-# --- Lifespan: Ensures Mongo Indexes on Startup ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("Booting up: Setting up MongoDB Indexes...")
@@ -21,37 +22,28 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Whatsapp Agent", lifespan=lifespan)
 
-
-# --- The Debounce Callback ---
-async def process_gatekeeper_flow(phone: str, aggregated_text: str):
-    print(f"\n[10-SECOND LOCK CLEARED] Processing for {phone}: '{aggregated_text}'")
-    
-    # 1. Save text to MongoDB
-    await db_manager.save_message_to_window(phone, role="user", text=aggregated_text)
-    
-    # 2. Fetch history (7-day memory!)
-    history = await db_manager.get_recent_messages(phone, limit=5)
-    
-    # 3. Evaluate via DeepSeek-Chat Gatekeeper
-    decision = await gatekeeper_agent.evaluate(history)
-    
-    # 4. Print the final routing decision
-    print("\n" + "="*40)
-    print("🧠 GATEKEEPER DECISION")
-    print("="*40)
-    print(f"Is Ready:          {decision.is_ready}")
-    print(f"Intended Action:   {decision.intended_action}")
-    print(f"Missing Fields:    {decision.missing_fields}")
-    print(f"Action Parameters: {decision.action_parameters}")
-    print("="*40 + "\n")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/")
 async def root():
-    return {
-        "status": True,
-        "message": "Whatsapp Agent is running."
-    }
+    """Serves the minimal Meta Onboarding Portal."""
+    # This assumes your index.html file is in the exact same directory as main.py
+    return FileResponse("index.html")
+    
+
+# @app.get("/")
+# async def root():
+#     return {
+#         "status": True,
+#         "message": "Whatsapp Agent is running."
+#     }
 
 
 @app.get("/health")
@@ -89,16 +81,13 @@ async def receive_whatsapp_event(request: Request, background_tasks: BackgroundT
 
         if "messages" in value:
             client_msg = value["messages"][0]
-            
-            # Guard against media, audio, or reaction payloads
+
             if client_msg.get("type") == "text":
                 phone = client_msg["from"]
                 text = client_msg["text"]["body"]
 
-                # 1. Push raw message to Redis buffer & reset the 10-second typing lock
                 await redis_manager.stack_incoming_message(phone=phone, text=text)
 
-                # 2. Spawn monitor task if one is not already watching this phone
                 if phone not in redis_manager.active_monitors:
                     redis_manager.active_monitors.add(phone)
                     background_tasks.add_task(
@@ -110,7 +99,6 @@ async def receive_whatsapp_event(request: Request, background_tasks: BackgroundT
     except (KeyError, IndexError):
         pass
 
-    # Instantly return 200 OK to Meta so it never times out
     return {"status": "success"}
 
 
@@ -145,3 +133,58 @@ async def test_mongodb(phone: str):
         "message_inserted": test_message,
         "database_history": recent_history
     }
+
+
+@app.post("/api/connect-whatsapp")
+async def connect_whatsapp_account(request: Request):
+    """
+    Receives the OAuth code from the minimal frontend and exchanges it 
+    for a permanent access token via the Meta Graph API.
+    """
+    payload = await request.json()
+    code = payload.get("code")
+    
+    if not code:
+        return {"status": "error", "message": "No authorization code provided."}
+
+    # 1. Exchange the code for a permanent access token
+    token_url = f"https://graph.facebook.com/v20.0/oauth/access_token"
+    token_payload = {
+        "client_id": "2409051026256039",
+        "client_secret": "ddddc907ac98c1a6cbe1b247158fa802",
+        "code": code,
+        "grant_type": "authorization_code",
+        # redirect_uri must match exactly what you configured in the Meta dashboard!
+        "redirect_uri": "http://localhost:8000/" 
+    }
+
+    async with httpx.AsyncClient() as client:
+        response = await client.post(token_url, data=token_payload)
+        token_data = response.json()
+
+        if "access_token" in token_data:
+            access_token = token_data["access_token"]
+            
+            # 2. Grab the tenant's Phone Number ID (Optional: Fetch it via Graph API using the new token)
+            # For simplicity, you can pass phone_number_id from the frontend, or make a GET request to 
+            # https://graph.facebook.com/v20.0/me/accounts to map it automatically.
+            phone_number_id = "extracted_phone_number_id" 
+            
+            # 3. Save directly to your MongoDB 'tenants' collection
+            await db_manager.db.tenants.update_one(
+                {"phone_number_id": phone_number_id},
+                {
+                    "$set": {
+                        "access_token": access_token,
+                        "client_name": "New Agent", # Update this dynamically based on their portal login
+                        "status": "active"
+                    }
+                },
+                upsert=True
+            )
+            
+            return {"status": "success", "message": "Tenant connected perfectly."}
+            
+        else:
+            print(f"Meta Token Exchange Error: {token_data}")
+            return {"status": "error", "message": "Failed to exchange token with Meta."}

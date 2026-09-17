@@ -1,4 +1,4 @@
-from typing import List, Dict, Any
+from typing import List, Dict
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from datetime import datetime
@@ -16,7 +16,7 @@ class Gatekeeper:
             api_key=config.LLM_API_KEY,
             temperature=0.0
         ).with_structured_output(IntentDecision, method="function_calling")
-        
+
         self._cached_tool_descriptions = ""
 
     async def _get_tool_schemas(self) -> str:
@@ -67,9 +67,9 @@ class Gatekeeper:
 
         system_instructions = f"""
         You are a strict Gatekeeper for a real estate AI copilot. Your job is to prevent incomplete thoughts from triggering backend tools.
-        
+
         CURRENT DATE AND TIME: {current_time}
-        
+
         Here are the available tools and their strictly REQUIRED parameters:
         {tool_schemas}
         
@@ -80,6 +80,7 @@ class Gatekeeper:
         4. Check if the user has provided ALL the required parameters for their intended Tool.
         5. If a required parameter is missing from the entire context, set 'is_ready' to FALSE and list the missing fields.
         6. If the sentence is grammatically cut off, set 'is_ready' to FALSE.
+        7. Set 'is_ready' to TRUE if 'intended_action' and all 'action_parameters' are satisfied and there is no left missing fields.
         """
 
         messages = [SystemMessage(content=system_instructions)]
@@ -88,6 +89,7 @@ class Gatekeeper:
 
         try:
             decision: IntentDecision = await self.llm.ainvoke(messages)
+            print(decision)
             return decision
 
         except Exception as e:

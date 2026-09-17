@@ -55,12 +55,10 @@ class RedisSessionManager:
     async def get_and_clear_buffer(self, phone: str) -> str:
         """Fetches all messages in the buffer, joins them, and clears the buffer."""
         buffer_key = self._format_buffer_key(phone)
-        
-        # Fetch all stacked messages
+
         messages = await self.r.lrange(buffer_key, 0, -1)
         
         if messages:
-            # Delete the buffer immediately after fetching
             await self.r.delete(buffer_key)
             return "\n".join(messages)
         return ""
@@ -78,17 +76,14 @@ class RedisSessionManager:
                 
                 is_locked = await self.r.exists(lock_key)
                 if not is_locked:
-                    # User paused for 5 seconds. Fetch the aggregated text.
                     aggregated_text = await self.get_and_clear_buffer(phone)
                     
                     if aggregated_text:
-                        # Append the final block to the main long-term session history
                         await self.append_client_message(phone, aggregated_text)
-                        
-                        # Dispatch to your Celery worker or Gatekeeper LLM
+
                         await dispatch_callback(phone, aggregated_text)
                         
-                    break # Exit the loop
+                    break
         finally:
             self.active_monitors.discard(phone)
 
