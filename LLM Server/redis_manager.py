@@ -1,6 +1,6 @@
 import json
 import asyncio
-from typing import List, Dict
+from typing import List, Dict, Optional
 import redis.asyncio as redis
 
 from config import config
@@ -9,25 +9,24 @@ from config import config
 class RedisSessionManager:
     def __init__(
         self,
-        host=config.REDIS_HOST,
-        port=config.REDIS_PORT,
+        host=None,
+        port=None,
         decode_responses=True,
-        username=config.REDIS_USERNAME,
-        password=config.REDIS_PASSWORD,
+        username=None,
+        password=None,
         default_ttl: int = 900,
         debounce_ttl: int = 5
     ):
-        """Initializes Async Redis connection."""
+        """Initializes Async Redis connection safely with config fallbacks."""
         self.r = redis.Redis(
-            host=host,
-            port=port,
+            host=host or config.REDIS_HOST or "localhost",
+            port=port or config.REDIS_PORT or 6379,
             decode_responses=decode_responses,
-            username=username,
-            password=password
+            username=username or config.REDIS_USERNAME or None,
+            password=password or config.REDIS_PASSWORD or None
         )
         self.default_ttl = default_ttl
         self.debounce_ttl = debounce_ttl
-
         self.active_monitors = set()
 
     def _format_key(self, phone: str) -> str:
@@ -43,7 +42,7 @@ class RedisSessionManager:
         return f"lock:{clean_phone}"
 
     async def stack_incoming_message(self, phone: str, text: str) -> None:
-        """Pushes a raw message to the temporary buffer and resets the typing lock."""
+        """Pushes a message to the debounce buffer and resets the typing lock."""
         buffer_key = self._format_buffer_key(phone)
         lock_key = self._format_lock_key(phone)
 
@@ -53,44 +52,33 @@ class RedisSessionManager:
         await pipe.execute()
 
     async def get_and_clear_buffer(self, phone: str) -> str:
-        """Fetches all messages in the buffer, joins them, and clears the buffer."""
+        """Fetches and deletes all buffered messages for the phone."""
         buffer_key = self._format_buffer_key(phone)
-
         messages = await self.r.lrange(buffer_key, 0, -1)
-        
         if messages:
             await self.r.delete(buffer_key)
             return "\n".join(messages)
         return ""
 
     async def monitor_typing_lock(self, phone: str, dispatch_callback):
-        """
-        Background loop to check if the user stopped typing.
-        When the lock expires, it triggers the callback function (e.g., Celery).
-        """
+        """Monitors user typing inactivity, then fires the dispatch flow."""
         lock_key = self._format_lock_key(phone)
-        
         try:
             while True:
                 await asyncio.sleep(1)
-                
                 is_locked = await self.r.exists(lock_key)
                 if not is_locked:
                     aggregated_text = await self.get_and_clear_buffer(phone)
-                    
                     if aggregated_text:
-                        await self.append_client_message(phone, aggregated_text)
-
+                        await self.append_message(phone, role="user", text=aggregated_text)
                         await dispatch_callback(phone, aggregated_text)
-                        
                     break
         finally:
             self.active_monitors.discard(phone)
 
-    async def append_client_message(self, phone: str, text: str) -> None:
+    async def append_message(self, phone: str, role: str, text: str) -> None:
         key = self._format_key(phone)
-        payload = json.dumps({"role": "user", "content": text})
-
+        payload = json.dumps({"role": role, "content": text})
         pipe = self.r.pipeline()
         pipe.rpush(key, payload)
         pipe.expire(key, self.default_ttl)
@@ -100,7 +88,7 @@ class RedisSessionManager:
         key = self._format_key(phone)
         raw_messages = await self.r.lrange(key, 0, -1)
         return [json.loads(msg) for msg in raw_messages]
-
+    
     async def delete_session(self, phone: str) -> bool:
         key = self._format_key(phone)
         return bool(await self.r.delete(key))

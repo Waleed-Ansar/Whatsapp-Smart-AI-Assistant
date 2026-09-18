@@ -24,5 +24,9 @@ class Config:
     DB_NAME = os.getenv("DB_NAME", "")
     CHAT_COLLECTION_NAME = os.getenv("CHAT_COLLECTION_NAME", "")
     CRED_COLLECTION_NAME = os.getenv("CRED_COLLECTION_NAME", "")
+    
+    WA_ACCESS_TOKEN = os.getenv("WA_ACCESS_TOKEN", "")
+    PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "")
+    RECIPIENT_PHONE = os.getenv("RECIPIENT_PHONE", "")
 
 config = Config()
