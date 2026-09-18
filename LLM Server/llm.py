@@ -124,6 +124,6 @@ class LLMServer:
             config=config,
         )
 
-        return (response["messages"][-1].content)
+        return response["messages"][-1].content
 
 llm_server = LLMServer()

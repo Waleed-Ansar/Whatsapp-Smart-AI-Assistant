@@ -23,7 +23,7 @@ class IntentDecision(BaseModel):
     )
     action_parameters: Dict[str, Any] | None = Field(
         default=None,
-        description="A JSON object containing the extracted values for the tool's parameters (e.g., {'city': 'gujranwala', 'price': 12000000}). Only populate with explicitly mentioned data."
+        description="A JSON object containing the extracted values for the tool's parameters (e.g., {'city': 'london', 'price': 12000000}). Only populate with explicitly mentioned data."
     )
     required_fields: List[str] = Field(
         description="The parameters strictly required by the intended tool."

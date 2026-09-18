@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, Query, Response, BackgroundTasks
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from datetime import datetime
 import requests, httpx
 
 from config import config
@@ -66,6 +67,7 @@ async def verify_webhook(
     challenge: Optional[str] = Query(None, alias="hub.challenge")
 ):
     """Meta Webhook Verification Endpoint (GET)."""
+    print(f"[LOG EVENT AT {datetime.now()} | EVENT: GET WEBHOOK")
     if mode == "subscribe" and token == config.WHATSAPP_VERIFY_TOKEN:
         print(" Verification successful!")
         return Response(content=challenge, media_type="text/plain")
@@ -74,6 +76,8 @@ async def verify_webhook(
 
 @app.post("/webhook")
 async def receive_whatsapp_event(request: Request, background_tasks: BackgroundTasks):
+    print(f"[LOG EVENT AT {datetime.now()} | EVENT: POST WEBHOOK")
+
     payload = await request.json()
 
     try:
