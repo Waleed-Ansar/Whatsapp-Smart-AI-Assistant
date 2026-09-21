@@ -1,105 +1,411 @@
-from typing import List, Dict
+from datetime import datetime
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
-from datetime import datetime
-from models import IntentDecision
+from langgraph.graph import StateGraph, START, END
 
+from models import IntentDecision, GatekeeperState
 from config import config
 from llm import llm_server
 
 
 class Gatekeeper:
+
     def __init__(self):
         self.llm = ChatOpenAI(
             base_url=config.LLM_API_URL,
-            model="deepseek-chat",
+            model=config.LLM_MODEL_NAME or "deepseek-chat",
             api_key=config.LLM_API_KEY,
             temperature=0.0
-        ).with_structured_output(IntentDecision, method="function_calling")
+        ).with_structured_output(
+            IntentDecision,
+            method="function_calling"
+        )
 
         self._cached_tool_descriptions = ""
 
+        self.checkpointer = None
+        self.graph = None
+
+    async def initialize(self, checkpointer):
+        """
+        Initialize LangGraph with the Redis checkpointer.
+
+        The Redis checkpointer is created and managed by FastAPI's
+        lifespan. We only receive it here and compile the graph with it.
+        """
+
+        self.checkpointer = checkpointer
+
+        builder = StateGraph(GatekeeperState)
+
+        builder.add_node(
+            "gatekeeper",
+            self._gatekeeper_node
+        )
+
+        builder.add_edge(START, "gatekeeper")
+        builder.add_edge("gatekeeper", END)
+
+        self.graph = builder.compile(
+            checkpointer=self.checkpointer
+        )
+
+        print("[GATEKEEPER] LangGraph + Redis initialized")
+
     async def _get_tool_schemas(self) -> str:
-        """Fetches tools from the MCP Server and formats them for the prompt."""
+
         if self._cached_tool_descriptions:
             return self._cached_tool_descriptions
 
         try:
             tools = await llm_server.get_mcp_tools()
-            
+
             descriptions = []
+
             for tool in tools:
-                schema_dict = {}
 
-                if hasattr(tool, "args_schema") and tool.args_schema:
-                    if isinstance(tool.args_schema, dict):
-                        schema_dict = tool.args_schema
+                schema_dict = (
+                    getattr(tool, "args_schema", None)
+                    or getattr(tool, "input_schema", None)
+                    or {}
+                )
 
-                    elif hasattr(tool.args_schema, "model_json_schema"):
-                        schema_dict = tool.args_schema.model_json_schema()
+                if hasattr(schema_dict, "model_json_schema"):
+                    schema_dict = schema_dict.model_json_schema()
 
-                    elif hasattr(tool.args_schema, "schema"):
-                        schema_dict = tool.args_schema.schema()
+                reqs = (
+                    schema_dict.get("required", [])
+                    if isinstance(schema_dict, dict)
+                    else []
+                )
 
-                elif hasattr(tool, "input_schema") and isinstance(tool.input_schema, dict):
-                    schema_dict = tool.input_schema
+                descriptions.append(
+                    f"- Tool: {tool.name}\n"
+                    f"  Required Arguments: {reqs}"
+                )
 
-                reqs = schema_dict.get("required", [])
-                
-                descriptions.append(f"- Tool: {tool.name}\n  Requires: {reqs}")
-            
-            self._cached_tool_descriptions = "\n".join(descriptions)
+            self._cached_tool_descriptions = "\n".join(
+                descriptions
+            )
+
             return self._cached_tool_descriptions
-            
-        except Exception as e:
-            print(f"Failed to fetch MCP schemas for Gatekeeper: {e}")
-            return "No tool schemas available."
-
-    async def evaluate(self, full_history: List[Dict[str, str]]) -> IntentDecision:
-        """
-        Evaluates the tail end of the conversation to determine execution readiness.
-        """
-        current_time = datetime.now().strftime("%A, %B %d, %Y %I:%M %p")
-
-        recent_history = full_history[-5:]
-
-        tool_schemas = await self._get_tool_schemas()
-
-        system_instructions = f"""
-        You are a strict Gatekeeper for a real estate AI copilot. Your job is to prevent incomplete thoughts from triggering backend tools.
-
-        CURRENT DATE AND TIME: {current_time}
-
-        Here are the available tools and their strictly REQUIRED parameters:
-        {tool_schemas}
-        
-        RULES:
-        1. Read the user's chronological chat log. This log spans multiple days. 
-        2. Resolve temporal references: If the user says "yesterday" or "the previous property", look at the older messages in the log to find the missing variables.
-        3. Extract any explicitly mentioned parameters and place them in 'action_parameters' as a JSON key-value mapping.
-        4. Check if the user has provided ALL the required parameters for their intended Tool.
-        5. If a required parameter is missing from the entire context, set 'is_ready' to FALSE and list the missing fields.
-        6. If the sentence is grammatically cut off, set 'is_ready' to FALSE.
-        7. Set 'is_ready' to TRUE if 'intended_action' and all 'action_parameters' are satisfied and there is no left missing fields.
-        """
-
-        messages = [SystemMessage(content=system_instructions)]
-        for msg in recent_history:
-            messages.append(HumanMessage(content=f"{msg['role']}: {msg['content']}"))
-
-        try:
-            decision: IntentDecision = await self.llm.ainvoke(messages)
-            print(decision)
-            return decision
 
         except Exception as e:
-            print(f"Gatekeeper parsing error: {e}")
-            return IntentDecision(
+
+            print(
+                f"[GATEKEEPER] Error loading MCP schemas: {e}"
+            )
+
+            return (
+                "RTD Tools: MAR, Intelligence, Upcoming, "
+                "Objections, Dual Key, Investment Index, "
+                "Project Comparison."
+            )
+
+    async def _gatekeeper_node(
+        self,
+        state: GatekeeperState
+    ):
+
+        messages = state["messages"]
+
+        if not messages:
+
+            decision = IntentDecision(
                 is_ready=False,
-                confidence=0.0,
                 intended_action=None,
                 required_fields=[],
                 missing_fields=[]
             )
+
+            return {
+                "decision": decision.model_dump()
+            }
+
+        current_time = datetime.now().strftime(
+            "%A, %B %d, %Y %I:%M %p"
+        )
+
+        tool_schemas = await self._get_tool_schemas()
+
+        prior_messages = messages[:-1]
+
+        history_lines = []
+
+        for message in prior_messages[-10:]:
+
+            role = getattr(
+                message,
+                "type",
+                "user"
+            )
+
+            content = getattr(
+                message,
+                "content",
+                ""
+            )
+
+            if role == "human":
+                role = "USER"
+            elif role == "ai":
+                role = "ASSISTANT"
+            elif role == "tool":
+                role = "TOOL"
+            else:
+                role = role.upper()
+
+            history_lines.append(
+                f"{role}: {content}"
+            )
+
+        history_block = (
+            "\n".join(history_lines)
+            if history_lines
+            else "No prior history."
+        )
+
+        latest_message = messages[-1]
+
+        latest_content = getattr(
+            latest_message,
+            "content",
+            ""
+        )
+
+        system_instructions = f"""
+            You are the silent RTD Advisor Background Copilot
+            for real estate agents.
+
+            Your job is to detect when a client conversation
+            requires generating an RTD Advisor Report.
+
+            CURRENT DATE & TIME:
+            {current_time}
+
+            AVAILABLE MCP TOOLS:
+            {tool_schemas}
+
+
+            RULES:
+
+            1. SILENT ON CHIT-CHAT & GRATITUDE
+
+            If the latest message is a greeting ("hi", "hello"),
+            gratitude ("thank you", "thanks"), acknowledgment
+            ("ok", "got it"), or general chat:
+
+            - intended_action = null
+            - is_ready = false
+
+            Do NOT generate reports for pleasantries.
+
+
+            2. DO NOT RE-TRIGGER COMPLETED REPORTS
+
+            Use the prior conversation history.
+
+            If the assistant already generated a report or
+            provided report details for a property/project,
+            do NOT automatically generate that same report again.
+
+            A user merely mentioning the same property is NOT
+            enough to regenerate the report.
+
+
+            3. EXPLICIT REGENERATION
+
+            Generate the same report again ONLY if the user
+            explicitly requests it.
+
+            Examples:
+
+            - generate the report again
+            - regenerate the report
+            - run the report again
+            - give me that report again
+            - repeat the report
+
+
+            4. FOLLOW-UP QUESTIONS
+
+            A question about information contained in a
+            previous report is NOT automatically a request
+            to regenerate the report.
+
+            Example:
+
+            Previous:
+            "RTD report for Project X has been generated."
+
+            User:
+            "What is the rental yield?"
+
+            Do NOT regenerate the report.
+
+
+            5. NEW INFORMATION
+
+            If the user explicitly requests an RTD report
+            using materially new property/data parameters,
+            treat it as a new report request.
+
+
+            6. QUOTED / SWIPED MESSAGES
+
+            If the latest message contains:
+
+            [In reply to: "..."]
+
+            extract relevant parameters from the quoted
+            message.
+
+            Possible parameters include:
+
+            - project
+            - property
+            - location
+            - budget
+            - bedrooms
+            - other required report parameters
+
+
+            7. TRIGGERING CONDITIONS
+
+            Set is_ready = true when ALL of the following are true:
+
+            - The latest user message contains an actionable request
+            corresponding to one of the available MCP tools.
+            - The intended_action matches that requested operation.
+            - All required parameters for that action are available.
+            - The request has not already been fulfilled for the same
+            parameters, unless the user explicitly asks to repeat,
+            regenerate, or run it again.
+
+            IMPORTANT:
+
+            Do NOT require the user to explicitly use the words
+            "RTD report".
+
+            If the available MCP tool is the appropriate action for
+            the user's request, treat that as an actionable request.
+
+            For example:
+
+            User:
+            "Give me property details for Citi Housing in Hall Road Lahore"
+
+            If the required parameters are:
+
+            city = Lahore
+            district = Hall Road
+            area = Citi Housing
+
+            then:
+
+            intended_action = get_property_details
+            missing_fields = []
+            is_ready = true
+
+            provided that this exact request has not already been fulfilled.
+        """
+
+        user_content = f"""
+            ### PRIOR CONVERSATION HISTORY:
+
+            {history_block}
+
+
+            ### LATEST INCOMING MESSAGE:
+
+            {latest_content}
+        """
+
+        try:
+
+            decision = await self.llm.ainvoke(
+                [
+                    SystemMessage(
+                        content=system_instructions
+                    ),
+                    HumanMessage(
+                        content=user_content
+                    )
+                ]
+            )
+
+            print(
+                "[GATEKEEPER] Decision generated"
+            )
+
+            return {
+                "decision": decision.model_dump()
+            }
+
+        except Exception as e:
+
+            print(
+                f"[GATEKEEPER ERROR]: {e}"
+            )
+
+            decision = IntentDecision(
+                is_ready=False,
+                intended_action=None,
+                required_fields=[],
+                missing_fields=[]
+            )
+
+            return {
+                "decision": decision.model_dump()
+            }
+
+    async def evaluate(
+        self,
+        agent_id: str,
+        client_phone: str,
+        latest_message: str
+    ) -> IntentDecision:
+
+        if not self.graph:
+            raise RuntimeError(
+                "Gatekeeper has not been initialized. "
+                "Call initialize() during FastAPI startup."
+            )
+
+        thread_id = (
+            f"agent:{agent_id}:client:{client_phone}"
+        )
+
+        graph_config = {
+            "configurable": {
+                "thread_id": thread_id
+            }
+        }
+
+        result = await self.graph.ainvoke(
+            {
+                "messages": [
+                    HumanMessage(
+                        content=latest_message
+                    )
+                ]
+            },
+            graph_config
+        )
+
+        decision_data = result.get("decision")
+
+        if not decision_data:
+            return IntentDecision(
+                is_ready=False,
+                intended_action=None,
+                required_fields=[],
+                missing_fields=[]
+            )
+
+        return IntentDecision(
+            **decision_data
+        )
+
 
 gatekeeper_agent = Gatekeeper()

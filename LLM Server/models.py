@@ -1,5 +1,6 @@
 from pydantic import BaseModel, Field
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
+from langgraph.graph import MessagesState
 
 
 class RequestModel(BaseModel):
@@ -32,3 +33,6 @@ class IntentDecision(BaseModel):
         default=None,
         description="Which of those required parameters are missing from the conversation."
     )
+
+class GatekeeperState(MessagesState):
+    decision: Optional[dict]

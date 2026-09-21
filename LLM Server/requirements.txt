@@ -5,6 +5,7 @@ langchain-core
 langchain-community
 langchain-mcp-adapters
 langchain-openai
+langgraph
 fastapi
 uvicorn
 dotenv

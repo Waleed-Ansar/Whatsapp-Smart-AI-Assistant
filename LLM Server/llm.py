@@ -4,25 +4,21 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
-from langchain.agents import create_agent
+from langgraph.prebuilt import create_react_agent
 
 from config import config
 from models import IntentDecision
-
 
 class LLMServer:
     def __init__(self):
         self.API_KEY = config.LLM_API_KEY
         self.MODEL = config.LLM_MODEL_NAME
         self.API_URL = config.LLM_API_URL
-
         self.MCP_SERVER_URL = config.MCP_SERVER_URL
-        self.MCP_SERVER_TRANSPORT = config.MCP_SERVER_TRANSPORT
         self.MCP_SERVER_API_KEY = config.MCP_SERVER_API_KEY
 
         self._agent = None
         self._mcp_client = None
-
         self.memory = MemorySaver()
         self._init_lock = asyncio.Lock()
 
@@ -52,7 +48,6 @@ class LLMServer:
         """.strip()
 
     async def _get_or_create_agent(self):
-        """Builds the agent once and caches it in memory."""
         if self._agent is not None:
             return self._agent
 
@@ -61,12 +56,12 @@ class LLMServer:
                 return self._agent
 
             self._mcp_client = MultiServerMCPClient({
-                "utility_tools": {
+                "rtd_tools": {
                     "url": self.MCP_SERVER_URL,
                     "transport": "http",
                     "headers": {
                         "Authorization": f"Bearer {self.MCP_SERVER_API_KEY}"
-                    },
+                    }
                 }
             })
             tools = await self._mcp_client.get_tools()
@@ -76,15 +71,15 @@ class LLMServer:
                 base_url=self.API_URL,
                 api_key=self.API_KEY,
                 temperature=0.0,
-                max_retries=3,
+                max_retries=5,
                 timeout=60,
             )
 
-            self._agent = create_agent(
+            self._agent = create_react_agent(
                 model=llm,
                 tools=tools,
-                system_prompt=self.SYSTEM_PROMPT,
-                checkpointer=self.memory,
+                prompt=self.SYSTEM_PROMPT,
+                checkpointer=self.memory
             )
             return self._agent
 
@@ -93,37 +88,24 @@ class LLMServer:
         Safely fetches MCP tools for external services like the Gatekeeper.
         Initializes the client and agent if they haven't been built yet.
         """
-        # Ensure the client and agent are built
         if self._mcp_client is None:
             await self._get_or_create_agent()
-            
-        # Safely return the tools
         return await self._mcp_client.get_tools()
 
-    def build_chat_per_user(self, chat_id: str) -> RunnableConfig:
-        """Synchronous configuration builder."""
-        return {
-            "configurable": {
-                "thread_id": f"tenant_user_{chat_id}"
-            }
-        }
-
-    async def serve(self, gate_response: IntentDecision, chat_id: str):
+    async def serve(self, decision: IntentDecision, chat_id: str) -> str:
         agent = await self._get_or_create_agent()
-        config = self.build_chat_per_user(chat_id=chat_id)
-
-        decision_json_string = gate_response.model_dump_json(indent=2)
+        run_config: RunnableConfig = {"configurable": {"thread_id": f"rtd_{chat_id}"}}
+        payload_str = decision.model_dump_json(indent=2)
 
         response: Dict[str, Any] = await agent.ainvoke(
             input={
                 "messages": [{
                     "role": "user",
-                    "content": f"Here is the Gatekeeper's analysis of the latest interaction:\n{decision_json_string}"
+                    "content": f"Execute action payload:\n{payload_str}"
                     }]
-                },
-            config=config,
+            },
+            config=run_config
         )
-
         return response["messages"][-1].content
 
 llm_server = LLMServer()

@@ -15,7 +15,7 @@ class RedisSessionManager:
         username=None,
         password=None,
         default_ttl: int = 900,
-        debounce_ttl: int = 5
+        debounce_ttl: int = 10
     ):
         """Initializes Async Redis connection safely with config fallbacks."""
         self.r = redis.Redis(

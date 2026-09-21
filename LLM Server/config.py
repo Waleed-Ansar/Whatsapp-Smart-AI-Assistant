@@ -28,5 +28,18 @@ class Config:
     WA_ACCESS_TOKEN = os.getenv("WA_ACCESS_TOKEN", "")
     PHONE_NUMBER_ID = os.getenv("PHONE_NUMBER_ID", "")
     RECIPIENT_PHONE = os.getenv("RECIPIENT_PHONE", "")
+    
+    @property
+    def REDIS_URL(self):
+        if self.REDIS_USERNAME and self.REDIS_PASSWORD:
+            return (
+                f"redis://{self.REDIS_USERNAME}:{self.REDIS_PASSWORD}"
+                f"@{self.REDIS_HOST}:{self.REDIS_PORT}"
+            )
+
+        if self.REDIS_PASSWORD:
+            return f"redis://:{self.REDIS_PASSWORD}@{self.REDIS_HOST}:{self.REDIS_PORT}"
+
+        return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}"
 
 config = Config()
