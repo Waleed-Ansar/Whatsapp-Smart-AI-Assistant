@@ -1,15 +1,31 @@
-pydantic
+# Web framework
+fastapi
+uvicorn
+
+# Agent orchestration (LangChain / LangGraph)
 langchain
 langchain-classic
 langchain-core
 langchain-community
-langchain-mcp-adapters
-langchain-openai
-langgraph
-fastapi
-uvicorn
-dotenv
-httpx
-redis
-motor
+langchain-mcp-adapters      # remote MCP tool discovery (llm.py)
+langchain-openai            # ChatOpenAI for gatekeeper.py and llm.py
+langgraph                   # StateGraph, MessagesState (gatekeeper.py)
+langgraph-checkpoint        # MemorySaver for the executor agent (llm.py)
+langgraph-prebuilt          # create_react_agent executor (llm.py)
+langgraph-checkpoint-redis  # AsyncRedisSaver, durable gatekeeper memory (main.py)
+
+# Speech to text
+huggingface_hub             # AsyncInferenceClient, voice note transcription (transcribe.py)
+
+# HTTP, cache and persistence
+httpx                       # WhatsApp Graph API + MCP health check
+redis                       # sessions, buffers, locks, wamid cache
+motor                       # async MongoDB driver (database.py)
+pymongo                     # OperationFailure handling (database.py)
+
+# Config and data models
+python-dotenv               # load_dotenv (config.py)
+pydantic                    # IntentDecision and API models (models.py)
+
+# Auth utilities
 passlib

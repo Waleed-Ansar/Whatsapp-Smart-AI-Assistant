@@ -6,7 +6,10 @@ load_dotenv()
 class Config:
     LLM_API_URL = os.getenv("LLM_API_URL", "")
     LLM_API_KEY = os.getenv("LLM_API_KEY", "")
-    LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "")
+    LLM_MODEL_NAME = os.getenv("LLM_MODEL_NAME", "deepseek-chat")
+    
+    HF_INFERENCE_TOKEN = os.getenv("HF_INFERENCE_TOKEN", "")
+    STT_MODEL_NAME = os.getenv("STT_MODEL_NAME", "openai/whisper-large-v3")
     
     WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "")
     
