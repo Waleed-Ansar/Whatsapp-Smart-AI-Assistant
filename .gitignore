@@ -217,5 +217,6 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# python files
-LLM Server/test.py
+
+# rtd_singapore_knowledge/*
+rtd_singapore_knowledge/*
