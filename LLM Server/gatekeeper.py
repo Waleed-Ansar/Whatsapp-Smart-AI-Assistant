@@ -1,4 +1,5 @@
 from datetime import datetime
+
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage, HumanMessage
 from langgraph.graph import StateGraph, START, END
@@ -6,6 +7,7 @@ from langgraph.graph import StateGraph, START, END
 from models import IntentDecision, GatekeeperState
 from config import config
 from llm import llm_server
+from knowledge import knowledge_manager
 
 
 class Gatekeeper:
@@ -23,8 +25,16 @@ class Gatekeeper:
 
         self._cached_tool_descriptions = ""
 
+        # LangGraph / Redis
         self.checkpointer = None
         self.graph = None
+
+        # Domain knowledge
+        self.knowledge_context = None
+
+    # ============================================================
+    # INITIALIZATION
+    # ============================================================
 
     async def initialize(self, checkpointer):
         """
@@ -36,6 +46,21 @@ class Gatekeeper:
 
         self.checkpointer = checkpointer
 
+        # --------------------------------------------------------
+        # Load domain knowledge
+        # --------------------------------------------------------
+
+        if not knowledge_manager.is_loaded():
+            knowledge_manager.load()
+
+        self.knowledge_context = (
+            knowledge_manager.get_llm_context()
+        )
+
+        # --------------------------------------------------------
+        # Build LangGraph
+        # --------------------------------------------------------
+
         builder = StateGraph(GatekeeperState)
 
         builder.add_node(
@@ -43,14 +68,31 @@ class Gatekeeper:
             self._gatekeeper_node
         )
 
-        builder.add_edge(START, "gatekeeper")
-        builder.add_edge("gatekeeper", END)
+        builder.add_edge(
+            START,
+            "gatekeeper"
+        )
+
+        builder.add_edge(
+            "gatekeeper",
+            END
+        )
 
         self.graph = builder.compile(
             checkpointer=self.checkpointer
         )
 
-        print("[GATEKEEPER] LangGraph + Redis initialized")
+        print(
+            "[GATEKEEPER] LangGraph + Redis initialized"
+        )
+
+        print(
+            "[GATEKEEPER] Domain knowledge loaded"
+        )
+
+    # ============================================================
+    # MCP TOOL SCHEMAS
+    # ============================================================
 
     async def _get_tool_schemas(self) -> str:
 
@@ -58,6 +100,7 @@ class Gatekeeper:
             return self._cached_tool_descriptions
 
         try:
+
             tools = await llm_server.get_mcp_tools()
 
             descriptions = []
@@ -70,11 +113,19 @@ class Gatekeeper:
                     or {}
                 )
 
-                if hasattr(schema_dict, "model_json_schema"):
-                    schema_dict = schema_dict.model_json_schema()
+                if hasattr(
+                    schema_dict,
+                    "model_json_schema"
+                ):
+                    schema_dict = (
+                        schema_dict.model_json_schema()
+                    )
 
                 reqs = (
-                    schema_dict.get("required", [])
+                    schema_dict.get(
+                        "required",
+                        []
+                    )
                     if isinstance(schema_dict, dict)
                     else []
                 )
@@ -84,8 +135,8 @@ class Gatekeeper:
                     f"  Required Arguments: {reqs}"
                 )
 
-            self._cached_tool_descriptions = "\n".join(
-                descriptions
+            self._cached_tool_descriptions = (
+                "\n".join(descriptions)
             )
 
             return self._cached_tool_descriptions
@@ -102,12 +153,20 @@ class Gatekeeper:
                 "Project Comparison."
             )
 
+    # ============================================================
+    # LANGGRAPH NODE
+    # ============================================================
+
     async def _gatekeeper_node(
         self,
         state: GatekeeperState
     ):
 
         messages = state["messages"]
+
+        # --------------------------------------------------------
+        # Safety check
+        # --------------------------------------------------------
 
         if not messages:
 
@@ -122,11 +181,23 @@ class Gatekeeper:
                 "decision": decision.model_dump()
             }
 
+        # --------------------------------------------------------
+        # Current date/time
+        # --------------------------------------------------------
+
         current_time = datetime.now().strftime(
             "%A, %B %d, %Y %I:%M %p"
         )
 
+        # --------------------------------------------------------
+        # MCP tools
+        # --------------------------------------------------------
+
         tool_schemas = await self._get_tool_schemas()
+
+        # --------------------------------------------------------
+        # Conversation history
+        # --------------------------------------------------------
 
         prior_messages = messages[:-1]
 
@@ -148,10 +219,13 @@ class Gatekeeper:
 
             if role == "human":
                 role = "USER"
+
             elif role == "ai":
                 role = "ASSISTANT"
+
             elif role == "tool":
                 role = "TOOL"
+
             else:
                 role = role.upper()
 
@@ -165,6 +239,10 @@ class Gatekeeper:
             else "No prior history."
         )
 
+        # --------------------------------------------------------
+        # Latest message
+        # --------------------------------------------------------
+
         latest_message = messages[-1]
 
         latest_content = getattr(
@@ -172,6 +250,24 @@ class Gatekeeper:
             "content",
             ""
         )
+
+        # --------------------------------------------------------
+        # Make sure knowledge is available
+        # --------------------------------------------------------
+
+        if self.knowledge_context is None:
+
+            knowledge_manager.load()
+
+            self.knowledge_context = (
+                knowledge_manager.get_llm_context()
+            )
+
+        # ========================================================
+        # YOUR ORIGINAL PROMPT
+        #
+        # DO NOT CHANGE
+        # ========================================================
 
         system_instructions = f"""
             You are the silent RTD Advisor Background Copilot
@@ -197,8 +293,6 @@ class Gatekeeper:
 
             - intended_action = null
             - is_ready = false
-
-            Do NOT generate reports for pleasantries.
 
 
             2. DO NOT RE-TRIGGER COMPLETED REPORTS
@@ -293,13 +387,13 @@ class Gatekeeper:
             For example:
 
             User:
-            "Give me property details for Citi Housing in Hall Road Lahore"
+            "Give me property details for Orchard Road in Orchard, Singapore"
 
             If the required parameters are:
 
-            city = Lahore
-            district = Hall Road
-            area = Citi Housing
+            city = Singapore
+            district = Orchard
+            area = Orchard Road
 
             then:
 
@@ -308,7 +402,53 @@ class Gatekeeper:
             is_ready = true
 
             provided that this exact request has not already been fulfilled.
+            
+            READINESS RULE — CRITICAL:
+
+            You MUST determine `is_ready` from the information available in the CURRENT conversation.
+
+            Set `is_ready` to TRUE when ALL required information for the selected `intended_action` has been identified and:
+            - `missing_fields` is an empty list []
+            - `intended_action` is a valid action
+            - `action_parameters` contains the required parameters for that action
+
+            Set `is_ready` to FALSE when ANY required information is still missing.
+
+            IMPORTANT:
+            `is_ready` and `missing_fields` MUST always agree.
+
+            If:
+            - `missing_fields = []`
+            - `intended_action` is valid
+            - all required `action_parameters` are available
+
+            THEN:
+            `is_ready = true`
+
+            If:
+            - `missing_fields` contains one or more fields
+
+            THEN:
+            `is_ready = false`
+
+            NEVER return `is_ready = false` when `missing_fields = []` and all required parameters for the intended action are present.
+
+            You must not invent information.
+
+            ==============================
+            DOMAIN KNOWLEDGE
+            ==============================
+
+            {self.knowledge_context}
+
+            ==============================
+            END DOMAIN KNOWLEDGE
+            ==============================
         """
+
+        # ========================================================
+        # USER INPUT
+        # ========================================================
 
         user_content = f"""
             ### PRIOR CONVERSATION HISTORY:
@@ -320,6 +460,10 @@ class Gatekeeper:
 
             {latest_content}
         """
+
+        # ========================================================
+        # LLM CALL
+        # ========================================================
 
         try:
 
@@ -359,6 +503,10 @@ class Gatekeeper:
                 "decision": decision.model_dump()
             }
 
+    # ============================================================
+    # PUBLIC EVALUATION
+    # ============================================================
+
     async def evaluate(
         self,
         agent_id: str,
@@ -367,10 +515,15 @@ class Gatekeeper:
     ) -> IntentDecision:
 
         if not self.graph:
+
             raise RuntimeError(
                 "Gatekeeper has not been initialized. "
                 "Call initialize() during FastAPI startup."
             )
+
+        # --------------------------------------------------------
+        # Unique conversation thread
+        # --------------------------------------------------------
 
         thread_id = (
             f"agent:{agent_id}:client:{client_phone}"
@@ -381,6 +534,13 @@ class Gatekeeper:
                 "thread_id": thread_id
             }
         }
+
+        # --------------------------------------------------------
+        # Send new user message to LangGraph
+        #
+        # The Redis checkpointer keeps the previous state for
+        # this agent/client thread.
+        # --------------------------------------------------------
 
         result = await self.graph.ainvoke(
             {
@@ -393,9 +553,16 @@ class Gatekeeper:
             graph_config
         )
 
-        decision_data = result.get("decision")
+        # --------------------------------------------------------
+        # Extract decision
+        # --------------------------------------------------------
+
+        decision_data = result.get(
+            "decision"
+        )
 
         if not decision_data:
+
             return IntentDecision(
                 is_ready=False,
                 intended_action=None,
@@ -407,5 +574,9 @@ class Gatekeeper:
             **decision_data
         )
 
+
+# ================================================================
+# GLOBAL GATEKEEPER INSTANCE
+# ================================================================
 
 gatekeeper_agent = Gatekeeper()

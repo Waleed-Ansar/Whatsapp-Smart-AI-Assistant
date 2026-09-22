@@ -13,6 +13,7 @@ from redis_manager import redis_manager
 from services import services
 from database import db_manager
 from gatekeeper import gatekeeper_agent
+from knowledge import knowledge_manager
 
 
 async def resolve_quoted_message(wamid: str) -> Optional[str]:
@@ -78,6 +79,8 @@ async def lifespan(app: FastAPI):
     )
 
     await db_manager.setup_indexes()
+    
+    knowledge_manager.load()
 
     redis_url = config.REDIS_URL
 

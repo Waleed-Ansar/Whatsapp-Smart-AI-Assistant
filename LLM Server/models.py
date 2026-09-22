@@ -1,11 +1,13 @@
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 from langgraph.graph import MessagesState
+from dataclasses import dataclass
 
 
 class RequestModel(BaseModel):
     chat_id: str
     query: str
+
 
 class ResponseModel(BaseModel):
     chat_id: str
@@ -34,5 +36,23 @@ class IntentDecision(BaseModel):
         description="Which of those required parameters are missing from the conversation."
     )
 
+
 class GatekeeperState(MessagesState):
     decision: Optional[dict]
+
+
+@dataclass
+class KnowledgeSection:
+    category: str
+    file_name: str
+    relative_path: str
+    content: Any
+
+
+@dataclass
+class KnowledgeStats:
+    total_files: int
+    json_files: int
+    markdown_files: int
+    text_files: int
+    categories: int
