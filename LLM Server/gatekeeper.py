@@ -50,12 +50,12 @@ class Gatekeeper:
         # Load domain knowledge
         # --------------------------------------------------------
 
-        if not knowledge_manager.is_loaded():
-            knowledge_manager.load()
+        # if not knowledge_manager.is_loaded():
+        #     knowledge_manager.load()
 
-        self.knowledge_context = (
-            knowledge_manager.get_llm_context()
-        )
+        # self.knowledge_context = (
+        #     knowledge_manager.get_llm_context()
+        # )
 
         # --------------------------------------------------------
         # Build LangGraph
@@ -255,13 +255,13 @@ class Gatekeeper:
         # Make sure knowledge is available
         # --------------------------------------------------------
 
-        if self.knowledge_context is None:
+        # if self.knowledge_context is None:
 
-            knowledge_manager.load()
+        #     knowledge_manager.load()
 
-            self.knowledge_context = (
-                knowledge_manager.get_llm_context()
-            )
+            # self.knowledge_context = (
+            #     knowledge_manager.get_llm_context()
+            # )
 
         # ========================================================
         # YOUR ORIGINAL PROMPT
@@ -433,13 +433,39 @@ class Gatekeeper:
 
             NEVER return `is_ready = false` when `missing_fields = []` and all required parameters for the intended action are present.
 
+            MISSING-FIELD QUESTION TIMING — CRITICAL:
+
+            When you detect that a real tool/action request has started and one or more required fields are missing, DO NOT ask for the missing fields immediately.
+
+            Start a "missing-field conversation window" from the FIRST message where the real tool-relevant data is detected.
+
+            During the next 7–10 user messages:
+            - Continue observing and extracting information normally.
+            - Do not ask the user for the missing fields.
+            - Do not repeatedly mention the missing fields.
+            - Allow the user to naturally provide the missing information through conversation.
+
+            After 7–10 user messages have occurred since that first real-data detection:
+            - If the required field(s) are still missing, ask ONLY for the missing field(s).
+            - Do not ask for information that has already been provided.
+            - Ask a concise, natural follow-up question.
+
+            IMPORTANT:
+            The 7–10 message count starts ONLY when real, tool-relevant information is first detected.
+            Casual conversation before that point does NOT count.
+            Messages before the first real-data detection must NOT start or advance this counter.
+
+            If all required fields become available before the 7–10 message window ends, do not ask anything; evaluate the action normally.
+
+            The 7–10 message window applies to the missing-field question timing only. It does NOT override rules for detecting a new request, preventing duplicate actions, or executing a complete action.
+            
             You must not invent information.
 
             ==============================
             DOMAIN KNOWLEDGE
             ==============================
 
-            {self.knowledge_context}
+            {knowledge_manager.load()}
 
             ==============================
             END DOMAIN KNOWLEDGE
