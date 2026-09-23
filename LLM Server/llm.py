@@ -9,6 +9,7 @@ from langgraph.prebuilt import create_react_agent
 from config import config
 from models import IntentDecision
 
+
 class LLMServer:
     def __init__(self):
         self.API_KEY = config.LLM_API_KEY

@@ -455,5 +455,5 @@ class KnowledgeManager:
 # ================================================================
 
 knowledge_manager = KnowledgeManager(
-    knowledge_dir=r"D:\RTD AI Workflow\Whatsapp-Smart-AI-Assistant\rtd_singapore_knowledge"
+    knowledge_dir=r"D:\RTD AI Workflow\singapore_real_estate_knowledge_base"
 )
