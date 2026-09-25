@@ -12,18 +12,22 @@ from config import config
 from redis_manager import redis_manager
 from services import services
 from database import db_manager
-from gatekeeper import gatekeeper_agent
 from knowledge import knowledge_manager
+from llm import llm_server
 from reply_client import auto_reply_agent
 
 
-async def resolve_quoted_message(wamid: str) -> Optional[str]:
+async def resolve_quoted_message(
+    wamid: str
+) -> Optional[str]:
     """Retrieves quoted message content from Redis (hot) or MongoDB (cold fallback)."""
 
     if not wamid:
         return None
 
-    cached = await redis_manager.r.get(f"msg:{wamid}")
+    cached = await redis_manager.r.get(
+        f"msg:{wamid}"
+    )
 
     if cached:
         return (
@@ -32,9 +36,12 @@ async def resolve_quoted_message(wamid: str) -> Optional[str]:
             else cached.decode("utf-8")
         )
 
-    db_text = await db_manager.get_message_by_wamid(wamid)
+    db_text = await db_manager.get_message_by_wamid(
+        wamid
+    )
 
     if db_text:
+
         await redis_manager.r.set(
             f"msg:{wamid}",
             db_text,
@@ -46,32 +53,6 @@ async def resolve_quoted_message(wamid: str) -> Optional[str]:
     return None
 
 
-async def start_gatekeeper_monitor(
-    phone: str,
-    background_tasks: BackgroundTasks
-):
-    """
-    Starts the typing-lock monitor for a client if one
-    is not already running.
-
-    Both text and voice messages use this same function.
-    """
-
-    if phone not in redis_manager.active_monitors:
-
-        redis_manager.active_monitors.add(phone)
-
-        background_tasks.add_task(
-            redis_manager.monitor_typing_lock,
-            phone,
-            services.process_gatekeeper_flow
-        )
-
-        print(
-            f"[MONITOR] Gatekeeper monitor started for {phone}"
-        )
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
 
@@ -80,7 +61,7 @@ async def lifespan(app: FastAPI):
     )
 
     await db_manager.setup_indexes()
-    
+
     knowledge_manager.load()
 
     redis_url = config.REDIS_URL
@@ -89,32 +70,35 @@ async def lifespan(app: FastAPI):
         "[LANGGRAPH] Connecting to Redis..."
     )
 
+    # Auto Reply Agent still uses LangGraph + Redis memory.
     async with AsyncRedisSaver.from_conn_string(
         redis_url
     ) as checkpointer:
 
-        print(
-            "[LANGGRAPH] Redis checkpointer created"
-        )
-
         await checkpointer.setup()
 
         print(
-            "[LANGGRAPH] Redis checkpointer setup complete"
+            "[LANGGRAPH] Redis checkpointer ready"
         )
-        
-        await auto_reply_agent.initialize(checkpointer=checkpointer)
 
-        print(
-            "[AUTO_REPLY] AUTO_REPLY Agent setup complete"
-        )
-        
-        await gatekeeper_agent.initialize(
-            checkpointer
+        # ---------------------------------------------------------
+        # AUTO REPLY AGENT -- KEPT FOR TESTING
+        # ---------------------------------------------------------
+        await auto_reply_agent.initialize(
+            checkpointer=checkpointer
         )
 
         print(
-            "[LANGGRAPH] Gatekeeper initialized"
+            "[AUTO REPLY] Agent initialized"
+        )
+
+        # ---------------------------------------------------------
+        # MAIN SINGLE TOOL-CALLING AGENT
+        # ---------------------------------------------------------
+        await llm_server.initialize()
+
+        print(
+            "[MAIN AGENT] Ready"
         )
 
         yield
@@ -123,16 +107,22 @@ async def lifespan(app: FastAPI):
         "Shutting down..."
     )
 
+    db_manager.close()
+
 
 async def run_auto_reply(
     phone: str,
     client_text: str,
 ):
     """
-    Generate and send an immediate conversational reply
-    for one inbound WhatsApp message using stateful memory.
+    Testing conversational agent.
+
+    This is independent from the main tool-calling agent.
+    It responds conversationally to every inbound client text message.
     """
+
     try:
+
         reply = await auto_reply_agent.respond(
             phone=phone,
             client_message=client_text
@@ -141,24 +131,23 @@ async def run_auto_reply(
         if not reply:
             return
 
-        # Send reply to WhatsApp
+        # services.send_whatsapp_message() already stores the outgoing
+        # WhatsApp message in MongoDB, so do not save it a second time here.
         await services.send_whatsapp_message(
             phone=phone,
             message=reply
         )
 
-        # Save AI reply to MongoDB
-        await db_manager.save_message_to_window(
-            phone=phone,
-            role="assistant",
-            text=reply
+        print(
+            f"[AUTO REPLY] Reply sent to {phone}"
         )
 
     except Exception as e:
+
         print(
             f"[AUTO REPLY] Error: {e}"
         )
-        
+
 
 app = FastAPI(
     title="Whatsapp Agent",
@@ -287,7 +276,9 @@ async def receive_whatsapp_event(
 
         client_msg = value["messages"][0]
 
-        msg_id = client_msg.get("id")
+        msg_id = client_msg.get(
+            "id"
+        )
 
         if not msg_id:
             return {
@@ -371,28 +362,22 @@ async def receive_whatsapp_event(
                 wamid=msg_id
             )
 
-            await redis_manager.stack_incoming_message(
-                phone=phone,
-                text=text
-            )
-
-            # ==========================================
-            # AUTO REPLY AGENT
-            # ==========================================
-
+            # =====================================================
+            # AUTO REPLY AGENT -- TESTING / CONVERSATIONAL REPLIES
+            # =====================================================
             background_tasks.add_task(
                 run_auto_reply,
                 phone,
                 text
             )
 
-            # ==========================================
-            # EXISTING GATEKEEPER
-            # ==========================================
-
-            await start_gatekeeper_monitor(
+            # =====================================================
+            # MAIN SINGLE AGENT -- INTENT + TOOL EXECUTION
+            # =====================================================
+            background_tasks.add_task(
+                services.process_agent_flow,
                 phone,
-                background_tasks
+                text
             )
 
         elif message_type == "audio":

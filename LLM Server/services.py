@@ -1,9 +1,6 @@
 import os
-import json
-import asyncio
 import httpx
 
-from gatekeeper import gatekeeper_agent
 from database import db_manager
 from llm import llm_server
 from config import config
@@ -18,11 +15,16 @@ os.makedirs(
     exist_ok=True
 )
 
+
 class Services:
     def __init__(self):
         self.token = "toekn"
 
-    async def send_whatsapp_message(self, phone: str, message: str) -> dict:
+    async def send_whatsapp_message(
+        self,
+        phone: str,
+        message: str
+    ) -> dict:
 
         url = (
             f"https://graph.facebook.com/v21.0/"
@@ -82,8 +84,63 @@ class Services:
 
             return res_data
 
+    async def process_agent_flow(
+        self,
+        phone: str,
+        client_text: str
+    ):
+        """
+        Direct-message single-agent flow.
 
-    async def get_whatsapp_media_url(self, 
+        There is no Gatekeeper and no message-burst aggregation here.
+        Every inbound client message reaches the main LLM agent directly.
+        """
+
+        print(
+            f"\n[MAIN AGENT] "
+            f"New message from {phone}: "
+            f"'{client_text}'"
+        )
+
+        history = await db_manager.get_recent_messages(
+            phone=phone,
+            limit=20
+        )
+
+        # The webhook saves the latest inbound message before this method
+        # runs. Avoid presenting that same message twice to the classifier.
+        if (
+            history
+            and history[-1].get("role") == "user"
+            and history[-1].get("content") == client_text
+        ):
+            history = history[:-1]
+
+        result = await llm_server.serve(
+            client_message=client_text,
+            chat_id=phone,
+            conversation_history=history
+        )
+
+        if not result:
+            print(
+                "[MAIN AGENT SILENT] "
+                "Observing / no new tool action."
+            )
+            return
+
+        await self.send_whatsapp_message(
+            phone=phone,
+            message=result
+        )
+
+        print(
+            f"[REPORT DISPATCHED] "
+            f"Tool result sent to {phone}"
+        )
+
+    async def get_whatsapp_media_url(
+        self,
         media_id: str
     ) -> str:
 
@@ -121,8 +178,11 @@ class Services:
 
             return media_url
 
-
-    async def download_whatsapp_audio(self, media_id: str, msg_id: str) -> str:
+    async def download_whatsapp_audio(
+        self,
+        media_id: str,
+        msg_id: str
+    ) -> str:
 
         media_url = await self.get_whatsapp_media_url(
             media_id
@@ -167,8 +227,13 @@ class Services:
 
         return file_path
 
+    async def process_voice_message(
+        self,
+        phone: str,
+        media_id: str,
+        msg_id: str
+    ):
 
-    async def process_voice_message(self, phone: str, media_id: str, msg_id: str):
         print(
             f"\n[VOICE MESSAGE] "
             f"Received voice message from {phone}"
@@ -182,6 +247,7 @@ class Services:
         audio_path = None
 
         try:
+
             audio_path = await self.download_whatsapp_audio(
                 media_id=media_id,
                 msg_id=msg_id
@@ -213,45 +279,14 @@ class Services:
                 wamid=msg_id
             )
 
-            await redis_manager.stack_incoming_message(
+            print(
+                "[VOICE MESSAGE] "
+                "Transcript sent directly to main agent."
+            )
+
+            await self.process_agent_flow(
                 phone=phone,
-                text=transcript
-            )
-
-            print(
-                "[VOICE MESSAGE] "
-                "Transcript added to Redis message stack."
-            )
-
-            if phone not in redis_manager.active_monitors:
-
-                redis_manager.active_monitors.add(
-                    phone
-                )
-
-                asyncio.create_task(
-                    redis_manager.monitor_typing_lock(
-                        phone,
-                        self.process_gatekeeper_flow
-                    )
-                )
-
-                print(
-                    "[VOICE MESSAGE] "
-                    f"Gatekeeper monitor started for {phone}"
-                )
-
-            else:
-
-                print(
-                    "[VOICE MESSAGE] "
-                    f"Gatekeeper monitor already active "
-                    f"for {phone}"
-                )
-
-            print(
-                "[VOICE MESSAGE] "
-                "Transcription sent to gatekeeper pipeline."
+                client_text=transcript
             )
 
         except Exception as e:
@@ -262,8 +297,10 @@ class Services:
             )
 
         finally:
-            if audio_path and os.path.exists(
+
+            if (
                 audio_path
+                and os.path.exists(audio_path)
             ):
 
                 try:
@@ -286,101 +323,5 @@ class Services:
                         f"{e}"
                     )
 
-
-    async def process_gatekeeper_flow(self, phone: str, aggregated_text: str):
-
-        print(
-            f"\n[COPILOT OBSERVER] "
-            f"New message from {phone}: "
-            f"'{aggregated_text}'"
-        )
-
-        agent_id = config.PHONE_NUMBER_ID
-
-        decision = await gatekeeper_agent.evaluate(
-            agent_id=agent_id,
-            client_phone=phone,
-            latest_message=aggregated_text
-        )
-
-        print(
-            "\n" + "=" * 40
-        )
-
-        print(
-            "🧠 RTD GATEKEEPER DECISION"
-        )
-
-        print(
-            "=" * 40
-        )
-
-        print(
-            f"Is Ready:          "
-            f"{decision.is_ready}"
-        )
-
-        print(
-            f"Intended Action:   "
-            f"{decision.intended_action}"
-        )
-
-        print(
-            f"Missing Fields:    "
-            f"{decision.missing_fields}"
-        )
-
-        print(
-            f"Action Parameters: "
-            f"{decision.action_parameters}"
-        )
-
-        print(
-            "=" * 40 + "\n"
-        )
-
-        if (
-            not decision.is_ready
-            or not decision.intended_action
-        ):
-
-            print(
-                "[COPILOT SILENT] "
-                "No report action triggered."
-            )
-
-            return
-
-        report_output = await llm_server.serve(
-            decision,
-            chat_id=phone
-        )
-
-        try:
-
-            data = json.loads(
-                report_output
-            )
-
-            formatted_message = json.dumps(
-                data,
-                indent=2
-            )
-
-        except Exception:
-
-            formatted_message = str(
-                report_output
-            )
-
-        await self.send_whatsapp_message(
-            phone=phone,
-            message=formatted_message
-        )
-
-        print(
-            f"[REPORT DISPATCHED] "
-            f"RTD report sent to {phone}"
-        )
 
 services = Services()
