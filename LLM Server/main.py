@@ -14,6 +14,7 @@ from services import services
 from database import db_manager
 from gatekeeper import gatekeeper_agent
 from knowledge import knowledge_manager
+from reply_client import auto_reply_agent
 
 
 async def resolve_quoted_message(wamid: str) -> Optional[str]:
@@ -101,7 +102,13 @@ async def lifespan(app: FastAPI):
         print(
             "[LANGGRAPH] Redis checkpointer setup complete"
         )
+        
+        await auto_reply_agent.initialize(checkpointer=checkpointer)
 
+        print(
+            "[AUTO_REPLY] AUTO_REPLY Agent setup complete"
+        )
+        
         await gatekeeper_agent.initialize(
             checkpointer
         )
@@ -116,6 +123,42 @@ async def lifespan(app: FastAPI):
         "Shutting down..."
     )
 
+
+async def run_auto_reply(
+    phone: str,
+    client_text: str,
+):
+    """
+    Generate and send an immediate conversational reply
+    for one inbound WhatsApp message using stateful memory.
+    """
+    try:
+        reply = await auto_reply_agent.respond(
+            phone=phone,
+            client_message=client_text
+        )
+
+        if not reply:
+            return
+
+        # Send reply to WhatsApp
+        await services.send_whatsapp_message(
+            phone=phone,
+            message=reply
+        )
+
+        # Save AI reply to MongoDB
+        await db_manager.save_message_to_window(
+            phone=phone,
+            role="assistant",
+            text=reply
+        )
+
+    except Exception as e:
+        print(
+            f"[AUTO REPLY] Error: {e}"
+        )
+        
 
 app = FastAPI(
     title="Whatsapp Agent",
@@ -332,6 +375,20 @@ async def receive_whatsapp_event(
                 phone=phone,
                 text=text
             )
+
+            # ==========================================
+            # AUTO REPLY AGENT
+            # ==========================================
+
+            background_tasks.add_task(
+                run_auto_reply,
+                phone,
+                text
+            )
+
+            # ==========================================
+            # EXISTING GATEKEEPER
+            # ==========================================
 
             await start_gatekeeper_monitor(
                 phone,
